@@ -11,11 +11,9 @@ A minimal reflective PE mapper with a hot-swappable plugin interface for Windows
 
 ## Quick Start
 
-Requires Visual Studio 2019+ with C++ desktop workload, or any MSVC toolchain with CMake 3.15+.
-
 ```powershell
 # Configure
-cmake -B build -G "Visual Studio 17 2022" -A x64
+cmake -B build
 
 # Build
 cmake --build build --config Release
