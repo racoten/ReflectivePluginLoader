@@ -7,7 +7,7 @@ A minimal reflective PE mapper with a hot-swappable plugin interface for Windows
 ## Blog Post
 
 <!-- TODO: Replace with your published URL -->
-> See the full writeup: [Using Reflective Loaders to Replace LoadLibrary for Hot-Swappable Modules in C++](#)
+> See the full writeup: [Using Reflective Loaders to Replace LoadLibrary for Hot-Swappable Modules in C++](https://racoten.gitbook.io/red-team-developments-and-operations#using-reflective-loaders-to-replace-loadlibrary-for-hot-swappable-modules-in-c)
 
 ## Quick Start
 
