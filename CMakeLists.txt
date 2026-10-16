@@ -16,4 +16,6 @@ elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
 endif()
 
 add_subdirectory(Modules/CmdPlugin)
+add_subdirectory(Modules/EchoPlugin)
+add_subdirectory(Modules/CounterPlugin)
 add_subdirectory(Testing)

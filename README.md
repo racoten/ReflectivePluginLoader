@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A minimal reflective PE mapper and module stomping engine for Windows x64, built around a clean `IPlugin` ABI. Maps a DLL from a byte buffer in memory, resolves exports, and calls plugin functions — either from anonymous memory (classic reflective load) or from inside a legitimately loaded sacrificial DLL (module stomping).
+A reflective PE mapper, module stomping engine, and **multi-plugin manager** for Windows x64, built around a clean `IPlugin` ABI. Maps DLLs from byte buffers in memory, resolves exports, and calls plugin functions — either from anonymous memory (classic reflective load) or from inside a legitimately loaded sacrificial DLL (module stomping). v2.1 adds a `PluginManager` that supports loading multiple plugins concurrently, persistent execution, hot-reload, and a `WinApiTable` abstraction for evasion-layer integration (e.g. KunaiGate/SealApi).
 
 The module stomping path is **evasion-hardened**: per-section protections (no RWX), private mapping cleanup, original byte restoration, and heap scrubbing. Post-cleanup scans with pe-sieve, Moneta, hollows_hunter, BeaconEye, and YARA return zero findings on the stomped module.
 
@@ -31,24 +31,40 @@ cmake --build build
 
 ## Usage
 
-### Classic Reflective Load
+### Interactive Mode (v2.1)
 
 ```powershell
-.\harness.exe cmdplugin.dll whoami
+.\harness.exe
 ```
 
-Maps the plugin into `VirtualAlloc`'d memory. No PEB entry, no loader notification.
+Launches an interactive menu for runtime plugin management:
 
-### Module Stomping
+```
+[1] Load plugin       — pick ID, DLL path, engine (reflective/stomped)
+[2] Unload plugin     — by ID
+[3] Execute plugin    — by ID, with a command string
+[4] Reload plugin     — hot-swap a new DLL into an existing slot
+[5] List plugins      — shows count, names, versions, engine type
+[6] Execute all       — runs every loaded plugin with one command
+[7] Scan commands     — prints pe-sieve/moneta commands for this PID
+[q] Quit
+```
+
+### CLI Mode
 
 ```powershell
-.\harness.exe cmdplugin.dll whoami --stomp xpsservices.dll
-.\harness.exe cmdplugin.dll "dir C:\" --stomp mscms.dll
+# Load multiple plugins and execute them
+.\harness.exe --load cmd cmdplugin.dll --load echo echoplugin.dll --exec cmd whoami --exec echo "hello" --list
+
+# Module stomping
+.\harness.exe --load cmd cmdplugin.dll --stomp xpsservices.dll --exec cmd whoami
+
+# Hot-reload test (counter resets after reload)
+.\harness.exe --load counter counterplugin.dll --exec counter a --exec counter b --reload counter counterplugin.dll --exec counter "after-reload" --list
+
+# Unload
+.\harness.exe --load cmd cmdplugin.dll --exec cmd whoami --unload cmd --list --unload-all
 ```
-
-Loads the sacrificial DLL legitimately via `LoadLibrary`, then overwrites its `.text` with the plugin as a contiguous image. Execution happens from the sacrificial DLL's address space — call stacks and module lists attribute the code to the sacrificial module.
-
-The harness pauses after cleanup so you can run memory scanners against the process.
 
 ## How Module Stomping Works
 
@@ -93,14 +109,21 @@ ReflectivePluginLoader/
 ├── CMakeLists.txt
 ├── Include/
 │   ├── IPlugin.h                      Plugin ABI (TaskApi, IPlugin)
-│   ├── ReflectiveLoaderEngine.h       PE mapper + export resolver
-│   └── StompedLoaderEngine.h          Module stomping engine
+│   ├── ReflectiveLoaderEngine.h       PE mapper + export resolver + FreeImage
+│   ├── StompedLoaderEngine.h          Module stomping engine
+│   └── PluginManager.h               Multi-plugin lifecycle manager (v2.1)
 ├── Modules/
-│   └── CmdPlugin/
-│       ├── cmdplugin.cpp              Command execution plugin
+│   ├── CmdPlugin/
+│   │   ├── cmdplugin.cpp              Command execution plugin
+│   │   └── CMakeLists.txt
+│   ├── EchoPlugin/
+│   │   ├── echoplugin.cpp             Echo plugin (demonstrates multi-plugin)
+│   │   └── CMakeLists.txt
+│   └── CounterPlugin/
+│       ├── counterplugin.cpp          Stateful counter (demonstrates persistence)
 │       └── CMakeLists.txt
 ├── Testing/
-│   ├── main.cpp                       Test harness
+│   ├── main.cpp                       Interactive + CLI harness (v2.1)
 │   └── CMakeLists.txt
 └── Tools/
     └── file2hex.py                    DLL to C byte array converter
@@ -124,7 +147,16 @@ public:
 
 3. Export the five entry points (`create_plugin`, `destroy_plugin`, `plugin_init`, `plugin_exec`, `plugin_cleanup`). Use `HeapAlloc` + placement `new` for CRT-safe allocation.
 
-4. Add a `CMakeLists.txt` and register it in the root with `add_subdirectory()`.
+4. Optionally export `plugin_info` for metadata:
+
+```cpp
+struct PluginInfo { const char* name; const char* version; const char* description; };
+extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
+    return { "myplugin", "2.1.0", "My plugin description" };
+}
+```
+
+5. Add a `CMakeLists.txt` and register it in the root with `add_subdirectory()`.
 
 ## Picking a Sacrificial DLL
 
@@ -139,6 +171,19 @@ Bad candidates: `ntdll.dll`, `kernel32.dll` (actively used), `clr.dll` (integrit
 - **Supported:** Base relocations, import resolution, per-section protections, contiguous image stomping, full cleanup with page restoration
 - **Not supported:** TLS callbacks, delay-load imports, forwarded exports, CFG, SEH table registration
 - **Stomping:** The entire plugin virtual image must fit in the sacrificial `.text` section
+
+## What Changed (v2.1 — Plugin Manager)
+
+- **PluginManager** (`PluginManager.h`) — multi-plugin lifecycle manager with load, unload, hot-reload, persistent execution, and plugin registry
+- **Multiple concurrent plugins** — load N plugins simultaneously, each tracked by a string ID with per-slot SRWLOCK concurrency
+- **Persistent execution** — call `execute()` on a loaded plugin multiple times without reloading; plugin instance stays alive until explicit unload
+- **Hot-reload** — swap a plugin's DLL at runtime without restarting the process; old instance is torn down, new one initialized at the same slot
+- **Plugin metadata** — optional `plugin_info` export for name/version/description; backward-compatible (falls back to caller-supplied ID)
+- **WinApiTable abstraction** — all Win API calls (VirtualAlloc, VirtualProtect, LoadLibraryA, etc.) go through a swappable function-pointer table; defaults to raw Win32, swap in KunaiGate/SealApi for evasion-wrapped calls
+- **FreeImage()** — proper unload for reflective loads: frees imported module handles and VirtualAlloc'd memory (previously leaked)
+- **Import tracking** — `MemModule` now tracks up to 64 imported HMODULEs for clean `FreeLibrary` on unload
+- **Sample plugins** — `EchoPlugin` (multi-plugin demo) and `CounterPlugin` (persistence/hot-reload demo)
+- **Interactive harness** — runtime menu for load/unload/execute/reload/list; also supports CLI-arg mode for scripted use
 
 ## What Changed (v2.0 — Evasion Hardening)
 
