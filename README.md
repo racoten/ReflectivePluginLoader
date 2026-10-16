@@ -158,18 +158,8 @@ This release is a ground-up rewrite of the original proof-of-concept:
 
 ### Scanner Results (post-cleanup)
 
-| Scanner | Result |
-|---|---|
-| pe-sieve | CLEAN |
-| Moneta | CLEAN (unsigned exe only — not a stomping IOC) |
-| hollows_hunter | CLEAN |
-| BeaconEye | CLEAN |
-| YARA (CobaltStrike rules) | CLEAN |
-| Hunt-Sleeping-Beacons | CLEAN |
-| Patriot | CLEAN |
-| MalMemDetect | CLEAN |
+<img width="1645" height="412" alt="image" src="https://github.com/user-attachments/assets/b1ae769d-5e66-4696-9be8-13b55e569700" />
 
-Tested with [GrumpySuite](https://github.com/racoten/GrumpySuite) (17-scanner aggregator).
 
 ## References
 
