@@ -72,5 +72,5 @@ struct PluginInfo {
 };
 
 extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "counter", "2.1.0", "Stateful execution counter" };
+    return { "counter", "2.0.1", "Stateful execution counter" };
 }

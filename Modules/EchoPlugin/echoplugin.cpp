@@ -64,5 +64,5 @@ struct PluginInfo {
 };
 
 extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "echo", "2.1.0", "Echoes task command to stdout" };
+    return { "echo", "2.0.1", "Echoes task command to stdout" };
 }

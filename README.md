@@ -2,7 +2,7 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A reflective PE mapper, module stomping engine, and **multi-plugin manager** for Windows x64, built around a clean `IPlugin` ABI. Maps DLLs from byte buffers in memory, resolves exports, and calls plugin functions — either from anonymous memory (classic reflective load) or from inside a legitimately loaded sacrificial DLL (module stomping). v2.1 adds a `PluginManager` that supports loading multiple plugins concurrently, persistent execution, hot-reload, and a `WinApiTable` abstraction for evasion-layer integration (e.g. KunaiGate/SealApi).
+A reflective PE mapper, module stomping engine, and **multi-plugin manager** for Windows x64, built around a clean `IPlugin` ABI. Maps DLLs from byte buffers in memory, resolves exports, and calls plugin functions — either from anonymous memory (classic reflective load) or from inside a legitimately loaded sacrificial DLL (module stomping). v2.0.1 adds a `PluginManager` that supports loading multiple plugins concurrently, persistent execution, hot-reload, and a `WinApiTable` abstraction for evasion-layer integration (e.g. KunaiGate/SealApi).
 
 The module stomping path is **evasion-hardened**: per-section protections (no RWX), private mapping cleanup, original byte restoration, and heap scrubbing. Post-cleanup scans with pe-sieve, Moneta, hollows_hunter, BeaconEye, and YARA return zero findings on the stomped module.
 
@@ -31,7 +31,7 @@ cmake --build build
 
 ## Usage
 
-### Interactive Mode (v2.1)
+### Interactive Mode (v2.0.1)
 
 ```powershell
 .\harness.exe
@@ -111,7 +111,7 @@ ReflectivePluginLoader/
 │   ├── IPlugin.h                      Plugin ABI (TaskApi, IPlugin)
 │   ├── ReflectiveLoaderEngine.h       PE mapper + export resolver + FreeImage
 │   ├── StompedLoaderEngine.h          Module stomping engine
-│   └── PluginManager.h               Multi-plugin lifecycle manager (v2.1)
+│   └── PluginManager.h               Multi-plugin lifecycle manager (v2.0.1)
 ├── Modules/
 │   ├── CmdPlugin/
 │   │   ├── cmdplugin.cpp              Command execution plugin
@@ -123,7 +123,7 @@ ReflectivePluginLoader/
 │       ├── counterplugin.cpp          Stateful counter (demonstrates persistence)
 │       └── CMakeLists.txt
 ├── Testing/
-│   ├── main.cpp                       Interactive + CLI harness (v2.1)
+│   ├── main.cpp                       Interactive + CLI harness (v2.0.1)
 │   └── CMakeLists.txt
 └── Tools/
     └── file2hex.py                    DLL to C byte array converter
@@ -152,7 +152,7 @@ public:
 ```cpp
 struct PluginInfo { const char* name; const char* version; const char* description; };
 extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "myplugin", "2.1.0", "My plugin description" };
+    return { "myplugin", "2.0.1", "My plugin description" };
 }
 ```
 
@@ -172,7 +172,7 @@ Bad candidates: `ntdll.dll`, `kernel32.dll` (actively used), `clr.dll` (integrit
 - **Not supported:** TLS callbacks, delay-load imports, forwarded exports, CFG, SEH table registration
 - **Stomping:** The entire plugin virtual image must fit in the sacrificial `.text` section
 
-## What Changed (v2.1 — Plugin Manager)
+## What Changed (v2.0.1 — Plugin Manager)
 
 - **PluginManager** (`PluginManager.h`) — multi-plugin lifecycle manager with load, unload, hot-reload, persistent execution, and plugin registry
 - **Multiple concurrent plugins** — load N plugins simultaneously, each tracked by a string ID with per-slot SRWLOCK concurrency
