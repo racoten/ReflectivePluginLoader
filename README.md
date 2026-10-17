@@ -214,10 +214,6 @@ This release is a ground-up rewrite of the original proof-of-concept:
 - **Test harness rewrite** (`main.cpp`) — conditional compilation via `NDEBUG`; Release builds show only command output and scan commands
 - **CMake defaults** — Release build type by default, `-nostartfiles` for plugin DLLs (no CRT in reflective-loaded code)
 
-### Scanner Results (post-cleanup)
-
-<img width="1645" height="412" alt="image" src="https://github.com/user-attachments/assets/b1ae769d-5e66-4696-9be8-13b55e569700" />
-
 
 ## References
 
