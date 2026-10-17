@@ -122,6 +122,12 @@ ReflectivePluginLoader/
 │   └── CounterPlugin/
 │       ├── counterplugin.cpp          Stateful counter (demonstrates persistence)
 │       └── CMakeLists.txt
+├── Examples/
+│   ├── basic_load.cpp                 Minimal single-plugin load + execute
+│   ├── multi_plugin.cpp               Multiple plugins with lifecycle
+│   ├── hot_reload.cpp                 Hot-reload with CounterPlugin
+│   ├── custom_api_table.cpp           Custom WinApiTable with logging wrappers
+│   └── module_stomping.cpp            Load via module stomping engine
 ├── Testing/
 │   ├── main.cpp                       Interactive + CLI harness (v2.0.1)
 │   └── CMakeLists.txt
