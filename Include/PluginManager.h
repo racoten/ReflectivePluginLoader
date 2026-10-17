@@ -33,7 +33,7 @@ enum class LoaderEngine { Reflective, Stomped };
 // ---------------------------------------------------------------------------
 // Function pointer types for the five required plugin exports.
 // ---------------------------------------------------------------------------
-using CreatePlugin_t  = IPlugin* (__stdcall*)();
+using CreatePlugin_t  = IPlugin* (__stdcall*)(const WinApiTable*);
 using DestroyPlugin_t = void(__stdcall*)(IPlugin*);
 using PluginInit_t    = void(__stdcall*)(IPlugin*);
 using PluginExec_t    = void(__stdcall*)(const TaskApi*);
@@ -193,6 +193,7 @@ public:
             ReleaseSRWLockShared(&slot.lock);
             return false;
         }
+        task->Api = &m_api;
         slot.fnExec(task);
         ReleaseSRWLockShared(&slot.lock);
         return true;
@@ -271,7 +272,7 @@ private:
             return false;
         }
 
-        slot.instance = slot.fnCreate();
+        slot.instance = slot.fnCreate(&m_api);
         if (!slot.instance) return false;
         slot.fnInit(slot.instance);
         slot.initialized = true;

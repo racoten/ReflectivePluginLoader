@@ -152,7 +152,7 @@ public:
 ```cpp
 struct PluginInfo { const char* name; const char* version; const char* description; };
 extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "myplugin", "2.0.1", "My plugin description" };
+    return { "myplugin", "2.0.2", "My plugin description" };
 }
 ```
 
@@ -171,6 +171,13 @@ Bad candidates: `ntdll.dll`, `kernel32.dll` (actively used), `clr.dll` (integrit
 - **Supported:** Base relocations, import resolution, per-section protections, contiguous image stomping, full cleanup with page restoration
 - **Not supported:** TLS callbacks, delay-load imports, forwarded exports, CFG, SEH table registration
 - **Stomping:** The entire plugin virtual image must fit in the sacrificial `.text` section
+
+## What Changed (v2.0.2 — WinApiTable Plumbing)
+
+- **`create_plugin(const WinApiTable* api)`** — plugins now receive the centralized API table at creation time and store it for their entire lifetime
+- **`TaskApi.Api`** — execution-time access to the WinApiTable for runtime allocations
+- **All plugins updated** — CmdPlugin, EchoPlugin, and CounterPlugin route HeapAlloc/HeapFree through the table; fallback to raw Win32 when `api` is null
+- **`Win32.h` included in IPlugin.h** — plugins can reference WinApiTable without extra includes
 
 ## What Changed (v2.0.1 — Plugin Manager)
 
