@@ -3,10 +3,9 @@
 #include "../../Include/IPlugin.h"
 
 class CounterPlugin : public IPlugin {
-    const WinApiTable* m_api;
     mutable int m_count;
 public:
-    explicit CounterPlugin(const WinApiTable* api) : m_api(api), m_count(0) {}
+    explicit CounterPlugin(const WinApiTable*) : m_count(0) {}
 
     void init()    const override { m_count = 0; }
     void cleanup() const override {}
@@ -72,12 +71,6 @@ extern "C" void __stdcall plugin_cleanup(IPlugin* p) {
     if (p) p->cleanup();
 }
 
-struct PluginInfo {
-    const char* name;
-    const char* version;
-    const char* description;
-};
-
-extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "counter", "2.0.2", "Stateful execution counter" };
+PLUGIN_EXPORT PluginInfo PLUGIN_CALL plugin_info() {
+    return { "counter", "2.0.3", "Stateful execution counter" };
 }

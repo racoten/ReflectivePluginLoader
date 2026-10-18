@@ -605,10 +605,7 @@ void __stdcall plugin_cleanup(IPlugin* p) {
     if (p) p->cleanup();
 }
 
-struct PluginInfo { const char* name; const char* version; const char* description; };
-
-extern "C" __declspec(dllexport)
-PluginInfo __stdcall plugin_info() {
+PLUGIN_EXPORT PluginInfo PLUGIN_CALL plugin_info() {
     return { "sleepmask", "2.0.3",
              "Unified sleep mask (Ekko/Kraken) with full-image encryption" };
 }

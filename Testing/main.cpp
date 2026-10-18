@@ -4,7 +4,6 @@
 #include <fstream>
 #include <vector>
 #include <string>
-#include <conio.h>
 #include <Windows.h>
 #include "../Include/PluginManager.h"
 

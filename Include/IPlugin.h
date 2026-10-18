@@ -20,6 +20,12 @@ typedef struct TaskApi {
     const WinApiTable* Api;
 } TaskApi;
 
+struct PluginInfo {
+    const char* name;
+    const char* version;
+    const char* description;
+};
+
 class IPlugin {
 public:
     virtual void init()                  const = 0;
@@ -27,22 +33,3 @@ public:
     virtual void cleanup()               const = 0;
     virtual ~IPlugin() = default;
 };
-
-static void BeaconPipeOutput(HANDLE hRead) {
-    BYTE buf[4096];
-    for (;;) {
-        DWORD got = 0;
-        if (!ReadFile(hRead, buf, sizeof(buf), &got, nullptr) || got == 0) break;
-        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-        if (hOut && hOut != INVALID_HANDLE_VALUE) {
-            DWORD wrote = 0;
-            WriteFile(hOut, buf, got, &wrote, nullptr);
-        }
-    }
-}
-
-PLUGIN_EXPORT IPlugin* PLUGIN_CALL create_plugin(const WinApiTable* api);
-PLUGIN_EXPORT void     PLUGIN_CALL destroy_plugin(IPlugin*);
-PLUGIN_EXPORT void     PLUGIN_CALL plugin_init(IPlugin*);
-PLUGIN_EXPORT void     PLUGIN_CALL plugin_exec(TaskApi* task);
-PLUGIN_EXPORT void     PLUGIN_CALL plugin_cleanup(IPlugin*);

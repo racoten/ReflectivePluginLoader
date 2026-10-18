@@ -17,14 +17,8 @@
 #endif
 
 // ---------------------------------------------------------------------------
-// Optional metadata export — plugins may export this for identification.
-// If absent, the manager uses the caller-supplied ID.
+// PluginInfo is defined in IPlugin.h (canonical location).
 // ---------------------------------------------------------------------------
-struct PluginInfo {
-    const char* name;
-    const char* version;
-    const char* description;
-};
 typedef PluginInfo (__stdcall* PluginInfoFn)();
 
 // ---------------------------------------------------------------------------
@@ -36,7 +30,7 @@ enum class LoaderEngine { Reflective, Stomped };
 using CreatePlugin_t  = IPlugin* (__stdcall*)(const WinApiTable*);
 using DestroyPlugin_t = void(__stdcall*)(IPlugin*);
 using PluginInit_t    = void(__stdcall*)(IPlugin*);
-using PluginExec_t    = void(__stdcall*)(const TaskApi*);
+using PluginExec_t    = void(__stdcall*)(TaskApi*);
 using PluginCleanup_t = void(__stdcall*)(IPlugin*);
 
 // ---------------------------------------------------------------------------

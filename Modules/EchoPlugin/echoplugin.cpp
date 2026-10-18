@@ -3,9 +3,8 @@
 #include "../../Include/IPlugin.h"
 
 class EchoPlugin : public IPlugin {
-    const WinApiTable* m_api;
 public:
-    explicit EchoPlugin(const WinApiTable* api) : m_api(api) {}
+    explicit EchoPlugin(const WinApiTable*) {}
     void init()    const override {}
     void cleanup() const override {}
     void execute(TaskApi* task) const override {
@@ -65,12 +64,6 @@ extern "C" void __stdcall plugin_cleanup(IPlugin* p) {
     if (p) p->cleanup();
 }
 
-struct PluginInfo {
-    const char* name;
-    const char* version;
-    const char* description;
-};
-
-extern "C" __declspec(dllexport) PluginInfo __stdcall plugin_info() {
-    return { "echo", "2.0.2", "Echoes task command to stdout" };
+PLUGIN_EXPORT PluginInfo PLUGIN_CALL plugin_info() {
+    return { "echo", "2.0.3", "Echoes task command to stdout" };
 }

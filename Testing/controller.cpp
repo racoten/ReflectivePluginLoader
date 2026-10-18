@@ -278,8 +278,8 @@ int main(int argc, char* argv[]) {
                 printf("  %s\n", line);
             }
 
-            WaitForSingleObject(hInput, 100);
-            TerminateThread(hInput, 0);
+            // Input thread is blocked in fgets — don't TerminateThread (unsafe,
+            // corrupts CRT locks). Just close handles and exit; the OS cleans up.
             CloseHandle(hInput);
             DeleteCriticalSection(&g_queueLock);
             goto cleanup;

